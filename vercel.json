@@ -1,0 +1,9 @@
+{
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/vtu-skip",
+      "destination": "/vtu-skip/skip.ps1"
+    },
+  ]
+}
