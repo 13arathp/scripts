@@ -5,5 +5,25 @@
       "source": "/vtu-skip",
       "destination": "/vtu-skip/skip.ps1"
     }
+  ],
+  "headers": [
+    {
+      "source": "/vtu-skip/skip.ps1",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/plain; charset=utf-8"
+        }
+      ]
+    },
+    {
+      "source": "/vtu-skip",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/plain; charset=utf-8"
+        }
+      ]
+    }
   ]
 }
