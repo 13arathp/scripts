@@ -4,6 +4,22 @@ $ErrorActionPreference = 'Stop'
 # TLS 1.2 fix for Windows PowerShell 5.1
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
+# Increase connection limit for parallel async blasts
+try { [Net.ServicePointManager]::DefaultConnectionLimit = 500 } catch { }
+
+# Initialize Global HttpClient for fast asynchronous dispatch
+try {
+    Add-Type -AssemblyName System.Net.Http
+    $Global:HttpClientHandler = [System.Net.Http.HttpClientHandler]::new()
+    $Global:HttpClientHandler.UseCookies = $false
+    $Global:HttpClientHandler.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+    $Global:HttpClient = [System.Net.Http.HttpClient]::new($Global:HttpClientHandler)
+    $Global:HttpClient.Timeout = [System.TimeSpan]::FromSeconds(15)
+}
+catch {
+    Write-Warning "Could not load System.Net.Http for async requests."
+}
+
 # Enforce UTF8 output for modern UI characters
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
@@ -24,7 +40,7 @@ $Config = [pscustomobject]@{
 
     RetryCount     = 3    # HTTP-level retries per failed API request
     RetryDelayMs   = 1500  # ms between HTTP retries
-    DelayMs        = 0    # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
+    DelayMs        = 470    # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -218,47 +234,41 @@ function Get-LectureDetails {
     return Invoke-Api -Method GET -Url $url -Headers $headers -Session $Session
 }
 
-function Send-ProgressWithRetry {
-    # Submits one 120s watch-chunk to the progress endpoint.
-    # The server accumulates chunks and sets is_completed = true once fully watched.
+function Start-ProgressRequestAsync {
     param(
-        $Session,
         [string]$CookieHeader,
         [string]$Slug,
         [string]$LectureId,
-        [int]$CurrentTime,    # cumulative seconds watched (playback cursor)
-        [int]$TotalDuration,  # actual lecture duration in seconds
-        [int]$Watched         # seconds in this chunk (server max: 120)
+        [int]$CurrentTime,
+        [int]$TotalDuration,
+        [int]$Watched
     )
     $url = "$($Config.BaseUrl)/student/my-courses/$Slug/lectures/$LectureId/progress"
-    $headers = New-Headers -Referer "$($Config.Origin)/student/learning/$Slug" `
-        -CookieHeader $CookieHeader -JsonContent -IncludeXHR
     $body = @{
         current_time_seconds   = 99999
         total_duration_seconds = $TotalDuration
         seconds_just_watched   = $Watched
     }
+    $jsonBody = $body | ConvertTo-Json -Depth 10
 
-    # Log the outgoing request payload
-    Write-Log "PROGRESS req  lec=$LectureId  current=$CurrentTime  total=$TotalDuration  watched=$Watched"
-
-    $lastErr = $null
-    for ($r = 0; $r -lt $Config.RetryCount; $r++) {
-        try {
-            $resp = Invoke-Api -Method POST -Url $url -Headers $headers -Body $body -Session $Session
-            # Log what the server came back with
-            $pct      = $resp.data.percent
-            $isDone   = [bool]$resp.data.is_completed
-            Write-Log "PROGRESS resp lec=$LectureId  percent=$pct  is_completed=$isDone"
-            return $resp
-        }
-        catch {
-            $lastErr = $_
-            Write-Log "Retry $($r+1)/$($Config.RetryCount) for lecture $LectureId : $($_.Exception.Message)" 'WARN'
-            Start-Sleep -Milliseconds $Config.RetryDelayMs
-        }
-    }
-    throw $lastErr
+    $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, $url)
+    $req.Headers.Add('Accept', 'application/json')
+    $req.Headers.Add('Accept-Language', 'en-US,en;q=0.9')
+    $req.Headers.Add('DNT', '1')
+    $req.Headers.Add('Origin', $Config.Origin)
+    $req.Headers.Add('Referer', "$($Config.Origin)/student/learning/$Slug")
+    $req.Headers.Add('Sec-Fetch-Dest', 'empty')
+    $req.Headers.Add('Sec-Fetch-Mode', 'cors')
+    $req.Headers.Add('Sec-Fetch-Site', 'same-origin')
+    $req.Headers.Add('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0')
+    $req.Headers.Add('sec-ch-ua', '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"')
+    $req.Headers.Add('sec-ch-ua-mobile', '?0')
+    $req.Headers.Add('sec-ch-ua-platform', '"Windows"')
+    $req.Headers.Add('Cookie', $CookieHeader)
+    $req.Headers.Add('X-Requested-With', 'XMLHttpRequest')
+    
+    $req.Content = [System.Net.Http.StringContent]::new($jsonBody, [System.Text.Encoding]::UTF8, 'application/json')
+    return $Global:HttpClient.SendAsync($req)
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -524,7 +534,7 @@ function Get-AllCourseData {
     foreach ($e in $Enrollments) {
         $slug = $e.details.slug
         if ([string]::IsNullOrWhiteSpace($slug)) { continue }
-        try   { $map[$slug] = Get-CourseDetails -Session $Session -CookieHeader $CookieHeader -Slug $slug }
+        try { $map[$slug] = Get-CourseDetails -Session $Session -CookieHeader $CookieHeader -Slug $slug }
         catch { Write-Log "Could not prefetch course $slug : $($_.Exception.Message)" 'WARN' }
     }
     return $map
@@ -570,8 +580,8 @@ function Start-VTUSkipper {
         $pad = Get-UIPad
         Write-Host ''
         Write-Host ($pad + '  Refreshing...') -ForegroundColor DarkGray
-        $enrollments  = Get-Enrollments    -Session $session -CookieHeader $cookie
-        $courseCache  = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $enrollments
+        $enrollments = Get-Enrollments    -Session $session -CookieHeader $cookie
+        $courseCache = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $enrollments
 
         $choices = @('Fetch Course Stats', 'Skip All Courses', 'Exit')
         $sel = Show-InteractiveMenu -Title 'MENU' -Options $choices
@@ -702,37 +712,99 @@ function Invoke-SkipAllCourses {
             # Print the static prefix for this lecture line
             Write-Host ($pad + $prefix) -NoNewline -ForegroundColor DarkGray
 
-            # Send chunks until the server confirms is_completed=True, or we hit MaxRetries
-            while (-not $completed -and $tries -lt $Config.MaxRetries) {
-                $currentTime += $chunk
-                $tries++
-                try {
-                    $resp = Send-ProgressWithRetry -Session $Session -CookieHeader $CookieHeader `
-                        -Slug $slug -LectureId $p.Id `
-                        -CurrentTime $currentTime -TotalDuration $totalSeconds -Watched $chunk
+            # Send chunks asynchronously without waiting for responses in between.
+            # We must use MaxRetries as the ceiling because fast async dispatches cause server-side database race conditions (dropped watched time).
+            $maxToDispatch = $Config.MaxRetries
+            $maxInFlight = if ($totalSeconds -gt 0) { $totalChunks } else { 3 }
+            $tasks = [System.Collections.Generic.List[object]]::new()
 
-                    # Check server confirmation (guard against missing percent field)
-                    $percentDone = $resp.data.percent
-                    if ([bool]$resp.data.is_completed -or ($null -ne $percentDone -and $percentDone -ge 100)) {
-                        $completed = $true
+            $checkTasks = {
+                for ($i = $tasks.Count - 1; $i -ge 0; $i--) {
+                    $tInfo = $tasks[$i]
+                    if (-not $tInfo.Task.IsCompleted) { continue }
+                    
+                    $isError = $false
+                    if ($tInfo.Task.IsFaulted -or $tInfo.Task.IsCanceled) {
+                        $isError = $true
+                        Write-Log "ASYNC PROGRESS failed lec=$($p.Id) current=$($tInfo.Current)" 'ERROR'
                     }
                     else {
-                        # Overwrite same line with updated progress bar
-                        if ($null -ne $percentDone) {
-                            $bar = ConvertTo-ProgressBar -Current ([int][double]$percentDone) -Total 100 -Width 16
+                        try {
+                            $r = $tInfo.Task.Result
+                            $j = $r.Content.ReadAsStringAsync().Result
+                            if ($r.IsSuccessStatusCode) {
+                                $d = $j | ConvertFrom-Json
+                                $pct = $d.data.percent
+                                Write-Log "PROGRESS resp lec=$($p.Id) percent=$pct is_completed=$($d.data.is_completed)"
+                                if ([bool]$d.data.is_completed -or ($null -ne $pct -and $pct -ge 100)) { 
+                                    $completed = $true 
+                                }
+                                else {
+                                    $bar = if ($null -ne $pct) { ConvertTo-ProgressBar ([int][double]$pct) 100 16 } else { ConvertTo-ProgressBar $tInfo.Tries $totalChunks 16 }
+                                    $pad = Get-UIPad; Write-Host "`r$pad$prefix$bar" -NoNewline -ForegroundColor DarkCyan
+                                }
+                            }
+                            else {
+                                Write-Log "ASYNC PROGRESS http error status=$($r.StatusCode) payload=$j" 'WARN'
+                                $isError = $true 
+                            }
+                        }
+                        catch {
+                            Write-Log "ASYNC PROGRESS parse error: $($_.Exception.Message)" 'ERROR'
+                            $isError = $true
+                        }
+                    }
+
+                    if ($isError) {
+                        if ($tInfo.RetryCount -lt $Config.RetryCount) {
+                            Write-Log "Retry $($tInfo.RetryCount+1)/$($Config.RetryCount) for chunk $($tInfo.Current)" 'WARN'
+                            if ($Config.RetryDelayMs -gt 0) { Start-Sleep -Milliseconds $Config.RetryDelayMs }
+                            try {
+                                $newTask = Start-ProgressRequestAsync -CookieHeader $CookieHeader -Slug $slug -LectureId $p.Id -CurrentTime $tInfo.Current -TotalDuration $totalSeconds -Watched $tInfo.Watched
+                                $tasks[$i] = @{ Task = $newTask; Tries = $tInfo.Tries; RetryCount = $tInfo.RetryCount + 1; Current = $tInfo.Current; Watched = $tInfo.Watched }
+                                continue
+                            }
+                            catch { 
+                                $failed = $true 
+                            }
                         }
                         else {
-                            $bar = ConvertTo-ProgressBar -Current $tries -Total $totalChunks -Width 16
+                            $failed = $true
                         }
-                        $pad = Get-UIPad
-                        Write-Host "`r$pad$prefix$bar" -NoNewline -ForegroundColor DarkCyan
                     }
+                    $tasks.RemoveAt($i)
                 }
-                catch {
-                    $failed = $true
-                    Write-Log "All retries exhausted: slug=$slug id=$($p.Id) : $($_.Exception.Message)" 'ERROR'
-                    break
+            }
+
+            for ($tries = 1; $tries -le $maxToDispatch; $tries++) {
+                if ($completed -or $failed) { break }
+                while ($tasks.Count -ge $maxInFlight -and -not $completed -and -not $failed) {
+                    Start-Sleep -Milliseconds 50
+                    . $checkTasks
                 }
+                if ($completed -or $failed) { break }
+
+                $currentTime += $chunk
+                try {
+                    $task = Start-ProgressRequestAsync -CookieHeader $CookieHeader -Slug $slug -LectureId $p.Id `
+                        -CurrentTime $currentTime -TotalDuration $totalSeconds -Watched $chunk
+                    $tasks.Add(@{ Task = $task; Tries = $tries; RetryCount = 0; Current = $currentTime; Watched = $chunk })
+                    Write-Log "PROGRESS req lec=$($p.Id) current=$currentTime total=$totalSeconds watched=$chunk"
+                }
+                catch { 
+                    $failed = $true 
+                }
+
+                if ($Config.DelayMs -gt 0) { Start-Sleep -Milliseconds $Config.DelayMs }
+                . $checkTasks
+            }
+
+            # Drain any remaining in-flight tasks
+            $drainTries = 0
+            while (-not $completed -and -not $failed -and $tasks.Count -gt 0 -and $drainTries -lt 500) {
+                Start-Sleep -Milliseconds 100
+                $drainTries++
+                . $checkTasks
             }
 
             # If MaxRetries hit without server confirmation, mark as TIMEOUT (not fake-done)
