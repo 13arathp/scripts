@@ -20,11 +20,11 @@ $Config = [pscustomobject]@{
 
     # Absolute safety cap. Natural exit is ceil(totalSeconds / 120) chunks.
     # 200 x 120s = ~6.6 hours. Prevents infinite loops on bad API responses.
-    MaxRetries     = 200
+    MaxRetries     = 100
 
     RetryCount     = 3    # HTTP-level retries per failed API request
-    RetryDelayMs   = 500  # ms between HTTP retries
-    DelayMs        = 100  # ms between consecutive API calls (can be lowered to 0-50, but risks 429 Too Many Requests)
+    RetryDelayMs   = 1500  # ms between HTTP retries
+    DelayMs        = 0    # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -235,12 +235,23 @@ function Send-ProgressWithRetry {
         -CookieHeader $CookieHeader -JsonContent -IncludeXHR
     $body = @{
         current_time_seconds   = 99999
-        total_duration_seconds = $TotalDuration  # now uses real duration
+        total_duration_seconds = $TotalDuration
         seconds_just_watched   = $Watched
     }
+
+    # Log the outgoing request payload
+    Write-Log "PROGRESS req  lec=$LectureId  current=$CurrentTime  total=$TotalDuration  watched=$Watched"
+
     $lastErr = $null
     for ($r = 0; $r -lt $Config.RetryCount; $r++) {
-        try { return Invoke-Api -Method POST -Url $url -Headers $headers -Body @($body) -Session $Session }
+        try {
+            $resp = Invoke-Api -Method POST -Url $url -Headers $headers -Body $body -Session $Session
+            # Log what the server came back with
+            $pct      = $resp.data.percent
+            $isDone   = [bool]$resp.data.is_completed
+            Write-Log "PROGRESS resp lec=$LectureId  percent=$pct  is_completed=$isDone"
+            return $resp
+        }
         catch {
             $lastErr = $_
             Write-Log "Retry $($r+1)/$($Config.RetryCount) for lecture $LectureId : $($_.Exception.Message)" 'WARN'
@@ -275,17 +286,26 @@ function Show-Banner {
     }
 
     Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
-    
-    $link = 'github.com/13arathp/vtu-skip'
+
+    $esc = [char]27
+    $link = 'github.com/13arathp/scripts'
+    $fullUrl = 'https://github.com/13arathp/scripts'
+    $hyperlink = "$esc]8;;$fullUrl$esc\$link$esc]8;;$esc\"
+
+    # Label line
+    $label = '-- source --'
+    $lbPad = [math]::Floor((92 - $label.Length) / 2)
+    $lbPadR = 92 - $label.Length - $lbPad
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+    Write-Host (' ' * $lbPad + $label + ' ' * $lbPadR) -NoNewline -ForegroundColor DarkGray
+    Write-Host '|' -ForegroundColor Cyan
+
+    # URL line — bright yellow, centered
     $lPad = [math]::Floor((92 - $link.Length) / 2)
     $lPadR = 92 - $link.Length - $lPad
-    
-    $esc = [char]27
-    $hyperlink = "$esc]8;;https://github.com/13arathp/vtu-skip$esc\$link$esc]8;;$esc\"
-    
     Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
     Write-Host (' ' * $lPad) -NoNewline
-    Write-Host $hyperlink -NoNewline -ForegroundColor DarkGray
+    Write-Host $hyperlink -NoNewline -ForegroundColor Yellow
     Write-Host (' ' * $lPadR) -NoNewline
     Write-Host '|' -ForegroundColor Cyan
 
@@ -372,7 +392,7 @@ function Show-InteractiveMenu {
 }
 
 function Invoke-FetchDetails {
-    param($Session, $CookieHeader, $Enrollments)
+    param($Session, $CookieHeader, $Enrollments, $CourseCache)
     Clear-Host
     Show-Banner
     $pad = Get-UIPad
@@ -393,8 +413,8 @@ function Invoke-FetchDetails {
         Write-Host " [$courseIndex/$($Enrollments.Count)] $titleShort".PadRight(92) -NoNewline -ForegroundColor White
         Write-Host '|' -ForegroundColor Cyan
         
-        try {
-            $course = Get-CourseDetails -Session $Session -CookieHeader $CookieHeader -Slug $slug
+        $course = if ($CourseCache.ContainsKey($slug)) { $CourseCache[$slug] } else { $null }
+        if ($course) {
             $lessons = $course.data.lessons
             $done = 0; $total = 0
             if ($lessons) {
@@ -418,9 +438,9 @@ function Invoke-FetchDetails {
             Write-Host '|' -ForegroundColor Cyan
             Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
         }
-        catch {
+        else {
             Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
-            Write-Host "   => [Error fetching course structure]".PadRight(92) -NoNewline -ForegroundColor Red
+            Write-Host "   => [Course data unavailable]".PadRight(92) -NoNewline -ForegroundColor Red
             Write-Host '|' -ForegroundColor Cyan
         }
     }
@@ -497,6 +517,19 @@ function Show-Summary {
     Write-Host ''
 }
 
+function Get-AllCourseData {
+    # Fetches course details for every enrollment and returns a hashtable keyed by slug.
+    param($Session, $CookieHeader, $Enrollments)
+    $map = @{}
+    foreach ($e in $Enrollments) {
+        $slug = $e.details.slug
+        if ([string]::IsNullOrWhiteSpace($slug)) { continue }
+        try   { $map[$slug] = Get-CourseDetails -Session $Session -CookieHeader $CookieHeader -Slug $slug }
+        catch { Write-Log "Could not prefetch course $slug : $($_.Exception.Message)" 'WARN' }
+    }
+    return $map
+}
+
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #region ------ MAIN ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -522,36 +555,48 @@ function Start-VTUSkipper {
     $cookie = $auth.CookieHeader
     Write-Host ($pad + '    OK') -ForegroundColor Green
 
-    # ------ Fetch Enrollments ------------------------------------------------------------------------------------------------------------------------------------------------------------
+    # ------ Check enrollments exist before entering menu ------------------------------------------------------------------
     Show-Step '2/3' 'Fetching enrollments...'
-    $enrollments = Get-Enrollments -Session $session -CookieHeader $cookie
-
-    # Wrap in @() to guarantee array coercion (API may return a single object)
-    if (-not $enrollments -or @($enrollments).Count -eq 0) {
+    $initialCheck = Get-Enrollments -Session $session -CookieHeader $cookie
+    if (-not $initialCheck -or @($initialCheck).Count -eq 0) {
         Write-Host ($pad + '    No enrollments found.') -ForegroundColor Red
         return
     }
-    Write-Host ($pad + "    $(@($enrollments).Count) course(s) found") -ForegroundColor Green
+    Write-Host ($pad + "    $(@($initialCheck).Count) course(s) found") -ForegroundColor Green
 
     # ==== MENU LOOP ====
     while ($true) {
+        # Prefetch everything before showing the menu so actions are instant
+        $pad = Get-UIPad
+        Write-Host ''
+        Write-Host ($pad + '  Refreshing...') -ForegroundColor DarkGray
+        $enrollments  = Get-Enrollments    -Session $session -CookieHeader $cookie
+        $courseCache  = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $enrollments
+
         $choices = @('Fetch Course Stats', 'Skip All Courses', 'Exit')
         $sel = Show-InteractiveMenu -Title 'MENU' -Options $choices
+
+        if ($sel -eq -1 -or $sel -eq 2) {
+            $pad = Get-UIPad
+            Write-Host ''
+            Write-Host ($pad + '  Thanks for using vtu-skip!') -ForegroundColor Cyan
+            Write-Host ($pad + '  Star or contribute on GitHub:') -ForegroundColor DarkGray
+            Write-Host ($pad + '  https://github.com/13arathp/scripts') -ForegroundColor Yellow
+            Write-Host ''
+            break
+        }
+
         if ($sel -eq 0) {
-            Invoke-FetchDetails -Session $session -CookieHeader $cookie -Enrollments $enrollments
+            Invoke-FetchDetails    -Session $session -CookieHeader $cookie -Enrollments $enrollments -CourseCache $courseCache
         }
         elseif ($sel -eq 1) {
-            Invoke-SkipAllCourses -Session $session -CookieHeader $cookie -Enrollments $enrollments
-        }
-        else {
-            Write-Host "`n  Exiting... Bye!`n" -ForegroundColor DarkGray
-            break
+            Invoke-SkipAllCourses  -Session $session -CookieHeader $cookie -Enrollments $enrollments -CourseCache $courseCache
         }
     }
 }
 
 function Invoke-SkipAllCourses {
-    param($Session, $CookieHeader, $Enrollments)
+    param($Session, $CookieHeader, $Enrollments, $CourseCache)
     Clear-Host
     Show-Banner
     Show-Step '3/3' 'Processing courses...'
@@ -581,11 +626,10 @@ function Invoke-SkipAllCourses {
 
         Show-CourseHeader $courseIndex $Enrollments.Count $title $progress
 
-        # Fetch full course structure (lessons -> lectures)
-        $course = $null
-        try { $course = Get-CourseDetails -Session $Session -CookieHeader $CookieHeader -Slug $slug }
-        catch {
-            Write-Host "   [!!] Failed to fetch course details: $($_.Exception.Message)" -ForegroundColor Red
+        # Use pre-fetched course data from cache
+        $course = if ($CourseCache.ContainsKey($slug)) { $CourseCache[$slug] } else { $null }
+        if (-not $course) {
+            Write-Host "   [!!] No cached data for course - skipping" -ForegroundColor Red
             continue
         }
 
@@ -634,7 +678,7 @@ function Invoke-SkipAllCourses {
             $lecIndex++
             $prefix = "    [$lecIndex/$($pending.Count)]  W$($p.Week) L$($p.LecNum) : $($p.Id)   "
 
-            # Fetch lecture duration for accurate progress bar and correct payload
+            # Fetch lecture duration for the progress bar and total_duration_seconds in the POST body.
             $totalSeconds = 0
             try {
                 $lectDetail = Get-LectureDetails -Session $Session -CookieHeader $CookieHeader -Slug $slug -LectureId $p.Id
@@ -642,17 +686,11 @@ function Invoke-SkipAllCourses {
             }
             catch {
                 Write-Log "Could not fetch duration for lecture $($p.Id): $($_.Exception.Message)" 'WARN'
-                # Falls back to MaxRetries as safety cap
             }
 
-            # Natural chunk count based on actual duration
-            $totalChunks = if ($totalSeconds -gt 0) {
-                [math]::Ceiling($totalSeconds / $Config.WatchChunk)
-            }
-            else { $Config.MaxRetries }
-
-            # Send up to 5 extra chunks as buffer before giving up
-            $maxChunks = if ($totalSeconds -gt 0) { $totalChunks + 5 } else { $Config.MaxRetries }
+            # Always use MaxRetries as the cap — let the server decide when it's done.
+            # totalChunks is kept only as a denominator for the local progress bar estimate.
+            $totalChunks = if ($totalSeconds -gt 0) { [math]::Ceiling($totalSeconds / $Config.WatchChunk) } else { $Config.MaxRetries }
 
             $currentTime = 0
             $chunk = $Config.WatchChunk
@@ -664,8 +702,8 @@ function Invoke-SkipAllCourses {
             # Print the static prefix for this lecture line
             Write-Host ($pad + $prefix) -NoNewline -ForegroundColor DarkGray
 
-            # Send 120s chunks until server confirms completion, up to $maxChunks
-            while (-not $completed -and $tries -lt $maxChunks) {
+            # Send chunks until the server confirms is_completed=True, or we hit MaxRetries
+            while (-not $completed -and $tries -lt $Config.MaxRetries) {
                 $currentTime += $chunk
                 $tries++
                 try {
@@ -697,11 +735,7 @@ function Invoke-SkipAllCourses {
                 }
             }
 
-            # If we sent all extended chunks without a server-side field confirming completion,
-            # treat it as done --- the server accumulated the full watch time regardless.
-            if (-not $completed -and -not $failed -and $tries -ge $maxChunks -and $totalChunks -gt 0) {
-                $completed = $true
-            }
+            # If MaxRetries hit without server confirmation, mark as TIMEOUT (not fake-done)
 
             # Clear the progress bar line, then print final coloured status
             $clearLine = ' ' * ($prefix.Length + 30)
@@ -754,14 +788,22 @@ try {
 }
 finally {
     if ([Console]::CursorVisible -ne $null) { try { [Console]::CursorVisible = $true } catch {} }
-    if ($Global:LogFile) {
-        # Bypass PowerShell's Write-Host suppression during unhandled interrupts
-        try {
+    try {
+        [Console]::WriteLine('')
+        if ($Global:LogFile) {
             [Console]::ForegroundColor = 'DarkGray'
-            [Console]::WriteLine("`n  [i] Session logs saved to: $($Global:LogFile)`n")
-            [Console]::ResetColor()
+            [Console]::WriteLine("  [i] Session logs saved to: $($Global:LogFile)")
         }
-        catch {}
+        [Console]::ForegroundColor = 'Cyan'
+        [Console]::WriteLine('')
+        [Console]::WriteLine('  Thanks for using vtu-skip!')
+        [Console]::ForegroundColor = 'DarkGray'
+        [Console]::WriteLine('  Star or contribute on GitHub:')
+        [Console]::ForegroundColor = 'Yellow'
+        [Console]::WriteLine('  https://github.com/13arathp/vtu-skip')
+        [Console]::WriteLine('')
+        [Console]::ResetColor()
     }
+    catch {}
 }
 
