@@ -872,7 +872,7 @@ finally {
         [Console]::ForegroundColor = 'DarkGray'
         [Console]::WriteLine('  Star or contribute on GitHub:')
         [Console]::ForegroundColor = 'Yellow'
-        [Console]::WriteLine('  https://github.com/13arathp/vtu-skip')
+        [Console]::WriteLine('  https://github.com/13arathp/scripts')
         [Console]::WriteLine('')
         [Console]::ResetColor()
     }
