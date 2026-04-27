@@ -24,7 +24,7 @@ $Config = [pscustomobject]@{
 
     RetryCount     = 3    # HTTP-level retries per failed API request
     RetryDelayMs   = 1500  # ms between HTTP retries
-    DelayMs        = 0    # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
+    DelayMs        = 50   # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -259,8 +259,8 @@ function Send-ProgressWithRetry {
         try {
             $resp = Invoke-Api -Method POST -Url $url -Headers $headers -Body $body -Session $Session
             # Log what the server came back with
-            $pct      = $resp.data.percent
-            $isDone   = [bool]$resp.data.is_completed
+            $pct = $resp.data.percent
+            $isDone = [bool]$resp.data.is_completed
             Write-Log "PROGRESS resp lec=$LectureId  percent=$pct  is_completed=$isDone"
             return $resp
         }
@@ -536,7 +536,7 @@ function Get-AllCourseData {
     foreach ($e in $Enrollments) {
         $slug = $e.details.slug
         if ([string]::IsNullOrWhiteSpace($slug)) { continue }
-        try   { $map[$slug] = Get-CourseDetails -Session $Session -CookieHeader $CookieHeader -Slug $slug }
+        try { $map[$slug] = Get-CourseDetails -Session $Session -CookieHeader $CookieHeader -Slug $slug }
         catch { Write-Log "Could not prefetch course $slug : $($_.Exception.Message)" 'WARN' }
     }
     return $map
@@ -583,8 +583,8 @@ function Start-VTUSkipper {
         $pad = Get-UIPad
         Write-Host ''
         Write-Host ($pad + '  Refreshing...') -ForegroundColor DarkGray
-        $enrollments  = Get-Enrollments    -Session $session -CookieHeader $cookie
-        $courseCache  = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $enrollments
+        $enrollments = Get-Enrollments    -Session $session -CookieHeader $cookie
+        $courseCache = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $enrollments
 
         $choices = @('Fetch Course Stats', 'Skip All Courses', 'Exit')
         $sel = Show-InteractiveMenu -Title 'MENU' -Options $choices
