@@ -263,28 +263,6 @@ function Start-ProgressRequestAsync {
     }
     $jsonBody = $body | ConvertTo-Json -Depth 10
 
-<<<<<<< HEAD
-    # Log the outgoing request payload
-    Write-Log "PROGRESS req  lec=$LectureId  current=$CurrentTime  total=$TotalDuration  watched=$Watched"
-
-    $lastErr = $null
-    for ($r = 0; $r -lt $Config.RetryCount; $r++) {
-        try {
-            $resp = Invoke-Api -Method POST -Url $url -Headers $headers -Body $body -Session $Session
-            # Log what the server came back with
-            $pct = $resp.data.percent
-            $isDone = [bool]$resp.data.is_completed
-            Write-Log "PROGRESS resp lec=$LectureId  percent=$pct  is_completed=$isDone"
-            return $resp
-        }
-        catch {
-            $lastErr = $_
-            Write-Log "Retry $($r+1)/$($Config.RetryCount) for lecture $LectureId : $($_.Exception.Message)" 'WARN'
-            Start-Sleep -Milliseconds $Config.RetryDelayMs
-        }
-    }
-    throw $lastErr
-=======
     $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, $url)
     $req.Headers.Add('Accept', 'application/json')
     $req.Headers.Add('Accept-Language', 'en-US,en;q=0.9')
@@ -303,7 +281,6 @@ function Start-ProgressRequestAsync {
     
     $req.Content = [System.Net.Http.StringContent]::new($jsonBody, [System.Text.Encoding]::UTF8, 'application/json')
     return $Global:HttpClient.SendAsync($req)
->>>>>>> 71af231cfc94191d6163b422c2cbbbd7603c6e42
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
