@@ -19,12 +19,12 @@ $Config = [pscustomobject]@{
     WatchChunk     = 120
 
     # Absolute safety cap. Natural exit is ceil(totalSeconds / 120) chunks.
-    # 200 x 120s = ~6.6 hours. Prevents infinite loops on bad API responses.
-    MaxRetries     = 100
+    # 300 x 120s = 10 hours. Prevents infinite loops on bad API responses.
+    MaxRetries     = 300
 
     RetryCount     = 3    # HTTP-level retries per failed API request
     RetryDelayMs   = 1500  # ms between HTTP retries
-    DelayMs        = 50   # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
+    DelayMs        = 140   # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -122,7 +122,7 @@ function New-Headers {
 }
 
 function Invoke-Api {
-    # Central HTTP wrapper: delays, logs, and captures response body on errors.
+    # Central HTTP wrapper: delays, retries, logs, and captures response body on errors.
     param(
         [Parameter(Mandatory)][ValidateSet('GET', 'POST')][string]$Method,
         [Parameter(Mandatory)][string]$Url,
@@ -130,29 +130,35 @@ function Invoke-Api {
         [object]$Body,
         [Parameter(Mandatory)][Microsoft.PowerShell.Commands.WebRequestSession]$Session
     )
-    Start-Sleep -Milliseconds $Config.DelayMs
-    Write-Log "$Method $Url"
-    try {
-        if ($Method -eq 'GET') {
-            return Invoke-RestMethod -Uri $Url -Method GET -Headers $Headers -WebSession $Session -ErrorAction Stop
-        }
-        else {
-            $jsonBody = if ($null -ne $Body) { $Body | ConvertTo-Json -Depth 10 } else { '{}' }
-            Write-Log "Body: $jsonBody" 'DEBUG'
-            return Invoke-RestMethod -Uri $Url -Method POST -Headers $Headers -Body $jsonBody -WebSession $Session -ErrorAction Stop
-        }
-    }
-    catch {
-        Write-Log "FAILED $Method $Url : $($_.Exception.Message)" 'ERROR'
+    $lastErr = $null
+    for ($r = 0; $r -lt $Config.RetryCount; $r++) {
+        Start-Sleep -Milliseconds $Config.DelayMs
+        Write-Log "$Method $Url"
         try {
-            if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream()) {
-                $sr = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                Write-Log "ResponseBody: $($sr.ReadToEnd())" 'ERROR'
+            if ($Method -eq 'GET') {
+                return Invoke-RestMethod -Uri $Url -Method GET -Headers $Headers -WebSession $Session -ErrorAction Stop
+            }
+            else {
+                $jsonBody = if ($null -ne $Body) { $Body | ConvertTo-Json -Depth 10 } else { '{}' }
+                Write-Log "Body: $jsonBody" 'DEBUG'
+                return Invoke-RestMethod -Uri $Url -Method POST -Headers $Headers -Body $jsonBody -WebSession $Session -ErrorAction Stop
             }
         }
-        catch { }
-        throw
+        catch {
+            $lastErr = $_
+            $msg = $_.Exception.Message
+            Write-Log "FAILED $Method $Url (Retry $($r+1)/$($Config.RetryCount)): $msg" 'WARN'
+            try {
+                if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream()) {
+                    $sr = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                    Write-Log "ResponseBody: $($sr.ReadToEnd())" 'ERROR'
+                }
+            }
+            catch { }
+            Start-Sleep -Milliseconds $Config.RetryDelayMs
+        }
     }
+    throw $lastErr
 }
 
 function Get-CookieHeaderFromSession {
@@ -254,23 +260,12 @@ function Send-ProgressWithRetry {
     # Log the outgoing request payload
     Write-Log "PROGRESS req  lec=$LectureId  current=$CurrentTime  total=$TotalDuration  watched=$Watched"
 
-    $lastErr = $null
-    for ($r = 0; $r -lt $Config.RetryCount; $r++) {
-        try {
-            $resp = Invoke-Api -Method POST -Url $url -Headers $headers -Body $body -Session $Session
-            # Log what the server came back with
-            $pct = $resp.data.percent
-            $isDone = [bool]$resp.data.is_completed
-            Write-Log "PROGRESS resp lec=$LectureId  percent=$pct  is_completed=$isDone"
-            return $resp
-        }
-        catch {
-            $lastErr = $_
-            Write-Log "Retry $($r+1)/$($Config.RetryCount) for lecture $LectureId : $($_.Exception.Message)" 'WARN'
-            Start-Sleep -Milliseconds $Config.RetryDelayMs
-        }
-    }
-    throw $lastErr
+    $resp = Invoke-Api -Method POST -Url $url -Headers $headers -Body $body -Session $Session
+    # Log what the server came back with
+    $pct = $resp.data.percent
+    $isDone = [bool]$resp.data.is_completed
+    Write-Log "PROGRESS resp lec=$LectureId  percent=$pct  is_completed=$isDone"
+    return $resp
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
