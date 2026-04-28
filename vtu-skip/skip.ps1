@@ -1,4 +1,4 @@
-﻿Set-StrictMode -Version Latest
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # TLS 1.2 fix for Windows PowerShell 5.1
@@ -53,7 +53,7 @@ function Write-Log {
 
 function Get-UIPad {
     $w = $host.UI.RawUI.WindowSize.Width
-    $boxW = 74
+    $boxW = 94
     if ($w -gt $boxW) { return ' ' * [math]::Floor(($w - $boxW) / 2) }
     return ''
 }
@@ -79,14 +79,11 @@ function ConvertFrom-VTUDuration {
 
 function ConvertTo-ProgressBar {
     param([int]$Current, [int]$Total, [int]$Width = 22)
-    $fChar = [string][char]9608 # █
-    $eChar = [string][char]9617 # ░
-    if ($Total -le 0) { return (($fChar * $Width) + ' 100%'.PadRight(5)) }
+    if ($Total -le 0) { return ('[' + ('=' * $Width) + '] 100%') }
     $pct = [math]::Min(100, [math]::Round(($Current / $Total) * 100))
-    $fill = [int][math]::Round(($pct / 100) * $Width)
-    $empty = [int]($Width - $fill)
-    $pctStr = " $pct%".PadRight(6)
-    return (($fChar * $fill) + ($eChar * $empty) + $pctStr)
+    $fill = [math]::Round(($pct / 100) * $Width)
+    $empty = $Width - $fill
+    return ('[' + ('=' * $fill) + (' ' * $empty) + "] $pct%")
 }
 
 function Send-StartupPing {
@@ -215,26 +212,15 @@ function Invoke-Login {
         -CookieHeader 'refresh_token=' -JsonContent
     $body = @{ email = $Email; password = $plain }
 
+    # Send body as a plain JSON object (not array). Skip body logging to protect credentials.
     $loginJson = $body | ConvertTo-Json -Depth 10
     Write-Log "POST $url" ; Write-Log '[login body redacted]' 'DEBUG'
-    
-    $lastErr = $null
-    for ($r = 0; $r -lt $Config.RetryCount; $r++) {
-        Start-Sleep -Milliseconds $Config.DelayMs
-        try {
-            $null = Invoke-RestMethod -Uri $url -Method POST -Headers $headers -Body $loginJson -WebSession $session -ErrorAction Stop
-            return [pscustomobject]@{
-                Session      = $session
-                CookieHeader = (Get-CookieHeaderFromSession -Session $session)
-            }
-        }
-        catch {
-            $lastErr = $_
-            Write-Log "Login failed (Retry $($r+1)/$($Config.RetryCount)): $($_.Exception.Message)" 'WARN'
-            if ($r -lt $Config.RetryCount - 1) { Start-Sleep -Milliseconds $Config.RetryDelayMs }
-        }
+    Start-Sleep -Milliseconds $Config.DelayMs
+    $null = Invoke-RestMethod -Uri $url -Method POST -Headers $headers -Body $loginJson -WebSession $session -ErrorAction Stop
+    return [pscustomobject]@{
+        Session      = $session
+        CookieHeader = (Get-CookieHeaderFromSession -Session $session)
     }
-    throw $lastErr
 }
 
 function Get-Enrollments {
@@ -299,25 +285,24 @@ function Send-ProgressWithRetry {
 function Show-Banner {
     Write-Host ''
     $pad = Get-UIPad
-    Write-Host ($pad + '╭────────────────────────────────────────────────────────────────────────╮') -ForegroundColor Cyan
-    Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
+    Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
+    Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
     
     $art = @(
-        '    │    │  ╭─────╮  ╭─────╮     ╭────╮  ╭╮  ╭──╮  ╭────╮'
-        '    │    │  │  ╭──╮  ╰──╮╭──╯    ╰─╮╭─╯  │╱╱╱│  │   ╰╮  ╰╮╭─╯'
-        '    ╱───╱   ╰─────╯  ──╯╰──         ╰────╯  │╱─╱│  │    │╰─╮╰─╮│'
-        '   ╱────╱  ╭─────╮  ──╯  ╰─╮    ╭────╮  │╱  ╱│  │    │╭╯╭╯│'
-        '   ╱      ╱  ╰─────╯  ╰─────╯    ╰────╯  ╰╯    ╰╯  ╰──╯╰────╯'
+        ' ____   ____  _________  _____  _____             ______   ___  ____   _____  _______   ',
+        '|_  _| |_  _||  _   _  ||_   _||_   _|          .'' ____ \ |_  ||_  _| |_   _||_   __ \  ',
+        '  \ \   / /  |_/ | | \_|  | |    | |    ______  | (___ \_|  | |_/ /     | |    | |__) | ',
+        '   \ \ / /       | |      | ''    '' |   |______|  _.____`.   |  __''.     | |    |  ___/  ',
+        '    \ '' /       _| |_      \ \__/ /             | \____) | _| |  \ \_  _| |_  _| |_     ',
+        '     \_/       |_____|      `.__.''               \______.''|____||____||_____||_____|    '
     )
     foreach ($line in $art) {
-        Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-        $artPad = [math]::Floor((72 - $line.Length) / 2)
-        $artPadR = 72 - $line.Length - $artPad
-        Write-Host (' ' * $artPad + $line + ' ' * $artPadR) -NoNewline -ForegroundColor White
-        Write-Host '│' -ForegroundColor Cyan
+        Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+        Write-Host (' ' + $line).PadRight(92) -NoNewline -ForegroundColor White
+        Write-Host '|' -ForegroundColor Cyan
     }
 
-    Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
+    Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
 
     $esc = [char]27
     $link = 'github.com/13arathp/scripts'
@@ -326,33 +311,33 @@ function Show-Banner {
 
     # Label line
     $label = '-- source --'
-    $lbPad = [math]::Floor((72 - $label.Length) / 2)
-    $lbPadR = 72 - $label.Length - $lbPad
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
+    $lbPad = [math]::Floor((92 - $label.Length) / 2)
+    $lbPadR = 92 - $label.Length - $lbPad
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
     Write-Host (' ' * $lbPad + $label + ' ' * $lbPadR) -NoNewline -ForegroundColor DarkGray
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host '|' -ForegroundColor Cyan
 
     # URL line — bright yellow, centered
-    $lPad = [math]::Floor((72 - $link.Length) / 2)
-    $lPadR = 72 - $link.Length - $lPad
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
+    $lPad = [math]::Floor((92 - $link.Length) / 2)
+    $lPadR = 92 - $link.Length - $lPad
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
     Write-Host (' ' * $lPad) -NoNewline
     Write-Host $hyperlink -NoNewline -ForegroundColor Yellow
     Write-Host (' ' * $lPadR) -NoNewline
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host '|' -ForegroundColor Cyan
 
     # Email line — bright yellow, centered
     $email = 'barathp.dev@gmail.com'
     $emailHref = "$esc]8;;https://mail.google.com/mail/?view=cm&fs=1&to=$email$esc\$email$esc]8;;$esc\"
-    $ePad = [math]::Floor((72 - $email.Length) / 2)
-    $ePadR = 72 - $email.Length - $ePad
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
+    $ePad = [math]::Floor((92 - $email.Length) / 2)
+    $ePadR = 92 - $email.Length - $ePad
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
     Write-Host (' ' * $ePad) -NoNewline
     Write-Host $emailHref -NoNewline -ForegroundColor Yellow
     Write-Host (' ' * $ePadR) -NoNewline
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host '|' -ForegroundColor Cyan
 
-    Write-Host ($pad + '╰────────────────────────────────────────────────────────────────────────╯') -ForegroundColor Cyan
+    Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
     Write-Host ''
 }
 
@@ -371,41 +356,41 @@ function Show-InteractiveMenu {
             Show-Banner
             $pad = Get-UIPad
         
-            Write-Host ($pad + '╭────────────────────────────────────────────────────────────────────────╮') -ForegroundColor Cyan
-            Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
+            Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
+            Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
         
-            $tPad = [math]::Floor((72 - $Title.Length) / 2)
-            $tPadR = 72 - $Title.Length - $tPad
-            Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
+            $tPad = [math]::Floor((92 - $Title.Length) / 2)
+            $tPadR = 92 - $Title.Length - $tPad
+            Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
             Write-Host (' ' * $tPad + $Title + ' ' * $tPadR) -NoNewline -ForegroundColor White
-            Write-Host '│' -ForegroundColor Cyan
+            Write-Host '|' -ForegroundColor Cyan
         
-            Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
+            Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
 
             foreach ($i in 0..($Options.Count - 1)) {
                 $opt = $Options[$i]
                 $optStrLen = $opt.Length + 5
-                $oPad = [math]::Floor((72 - $optStrLen) / 2)
-                $oPadR = 72 - $optStrLen - $oPad
+                $oPad = [math]::Floor((92 - $optStrLen) / 2)
+                $oPadR = 92 - $optStrLen - $oPad
             
-                Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
+                Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
                 Write-Host (' ' * $oPad) -NoNewline
                 if ($i -eq $selectedIndex) {
-                    Write-Host ' ▶ ' -NoNewline -ForegroundColor Cyan
-                    Write-Host " $opt " -NoNewline -ForegroundColor White
+                    Write-Host '-> ' -NoNewline -ForegroundColor Cyan
+                    Write-Host "[$opt]" -NoNewline -ForegroundColor White
                 }
                 else {
                     Write-Host "   $opt  " -NoNewline -ForegroundColor DarkGray
                 }
                 Write-Host (' ' * $oPadR) -NoNewline
-                Write-Host '│' -ForegroundColor Cyan
+                Write-Host '|' -ForegroundColor Cyan
             }
-            Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
-            Write-Host ($pad + '╰────────────────────────────────────────────────────────────────────────╯') -ForegroundColor Cyan
+            Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
+            Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
             Write-Host ''
         
             $help = '[Use Up/Down Arrows to select, Enter to confirm]'
-            $hPad = [math]::Floor((74 - $help.Length) / 2)
+            $hPad = [math]::Floor((94 - $help.Length) / 2)
             Write-Host ($pad + ' ' * $hPad + $help) -ForegroundColor DarkGray
         
             $keyInfo = [Console]::ReadKey($true)
@@ -439,22 +424,22 @@ function Invoke-FetchDetails {
     Clear-Host
     Show-Banner
     $pad = Get-UIPad
-    Write-Host ($pad + '╭── COURSE OVERVIEW ─────────────────────────────────────────────────────╮') -ForegroundColor Cyan
+    Write-Host ($pad + '+-- COURSE OVERVIEW -------------------------------------------------------------------------+') -ForegroundColor Cyan
     $courseIndex = 0
     foreach ($e in $Enrollments) {
         $courseIndex++
         $slug = $e.details.slug
         $title = $e.details.title
-        $titleShort = if ($title.Length -gt 65) { $title.Substring(0, 62) + '...' } else { $title }
+        $titleShort = if ($title.Length -gt 85) { $title.Substring(0, 82) + '...' } else { $title }
         
         if ([string]::IsNullOrWhiteSpace($slug)) { continue }
 
         $progress = if ($null -ne $e.progress_percent) { $e.progress_percent } else { '?' }
         $progressNum = if ($progress -ne '?' -and $null -ne $progress) { [int][double]$progress } else { 0 }
         
-        Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-        Write-Host " [$courseIndex/$($Enrollments.Count)] $titleShort".PadRight(72) -NoNewline -ForegroundColor White
-        Write-Host '│' -ForegroundColor Cyan
+        Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+        Write-Host " [$courseIndex/$($Enrollments.Count)] $titleShort".PadRight(92) -NoNewline -ForegroundColor White
+        Write-Host '|' -ForegroundColor Cyan
         
         $course = if ($CourseCache.ContainsKey($slug)) { $CourseCache[$slug] } else { $null }
         if ($course) {
@@ -470,26 +455,28 @@ function Invoke-FetchDetails {
                 }
             }
             $pending = $total - $done
-            $bar = ConvertTo-ProgressBar -Current $progressNum -Total 100 -Width 35
+            $bar = ConvertTo-ProgressBar -Current $progressNum -Total 100 -Width 40
             
-            Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-            $statsLine = "       $bar   ($done Done / $pending Pending)"
-            Write-Host $statsLine.PadRight(72) -NoNewline -ForegroundColor DarkGray
-            Write-Host '│' -ForegroundColor Cyan
-            Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
+            Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+            Write-Host "   => Progress : $bar".PadRight(92) -NoNewline -ForegroundColor DarkCyan
+            Write-Host '|' -ForegroundColor Cyan
+            
+            Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+            Write-Host "   => Lectures : $done Done | $pending Pending".PadRight(92) -NoNewline -ForegroundColor DarkGray
+            Write-Host '|' -ForegroundColor Cyan
+            Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
         }
         else {
-            Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-            Write-Host "       [Course data unavailable]".PadRight(72) -NoNewline -ForegroundColor Red
-            Write-Host '│' -ForegroundColor Cyan
-            Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
+            Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+            Write-Host "   => [Course data unavailable]".PadRight(92) -NoNewline -ForegroundColor Red
+            Write-Host '|' -ForegroundColor Cyan
         }
     }
-    Write-Host ($pad + '╰────────────────────────────────────────────────────────────────────────╯') -ForegroundColor Cyan
+    Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
     Write-Host ''
     
     $help = '[Press Enter to return to menu]'
-    $hPad = [math]::Floor((74 - $help.Length) / 2)
+    $hPad = [math]::Floor((94 - $help.Length) / 2)
     Write-Host ($pad + ' ' * $hPad + $help) -NoNewline -ForegroundColor DarkGray
     $null = Read-Host
 }
@@ -502,59 +489,59 @@ function Show-Step {
     param([string]$Num, [string]$Text)
     Write-Host ''
     $pad = Get-UIPad
-    Write-Host ($pad + " ╭─ [$Num] ") -NoNewline -ForegroundColor Cyan
+    Write-Host ($pad + " +- [$Num] ") -NoNewline -ForegroundColor Cyan
     Write-Host $Text -ForegroundColor White
 }
 
 function Show-CourseHeader {
     param([int]$Index, [int]$Total, [string]$Title, $Progress)
     $progressNum = if ($Progress -ne '?' -and $null -ne $Progress) { [int][double]$Progress } else { 0 }
-    $bar = ConvertTo-ProgressBar -Current $progressNum -Total 100 -Width 55
-    $titleShort = if ($Title.Length -gt 65) { $Title.Substring(0, 62) + '...' } else { $Title }
+    $bar = ConvertTo-ProgressBar -Current $progressNum -Total 100 -Width 40
+    $titleShort = if ($Title.Length -gt 85) { $Title.Substring(0, 82) + '...' } else { $Title }
     $pad = Get-UIPad
     Write-Host ''
-    Write-Host ($pad + '╭────────────────────────────────────────────────────────────────────────╮') -ForegroundColor Cyan
+    Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
     
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-    Write-Host " Course $Index of $Total".PadRight(72) -NoNewline -ForegroundColor DarkGray
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+    Write-Host " Course $Index of $Total".PadRight(92) -NoNewline -ForegroundColor DarkGray
+    Write-Host '|' -ForegroundColor Cyan
 
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-    Write-Host " $titleShort".PadRight(72) -NoNewline -ForegroundColor White
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+    Write-Host " $titleShort".PadRight(92) -NoNewline -ForegroundColor White
+    Write-Host '|' -ForegroundColor Cyan
 
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-    Write-Host " $bar".PadRight(72) -NoNewline -ForegroundColor DarkCyan
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+    Write-Host " $bar".PadRight(92) -NoNewline -ForegroundColor DarkCyan
+    Write-Host '|' -ForegroundColor Cyan
     
-    Write-Host ($pad + '╰────────────────────────────────────────────────────────────────────────╯') -ForegroundColor Cyan
+    Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
 }
 
 function Show-Summary {
     param([int]$Skipped, [int]$Already, [int]$Failed, [string]$Elapsed)
     $pad = Get-UIPad
     Write-Host ''
-    Write-Host ($pad + '╭── RUN COMPLETE ────────────────────────────────────────────────────────╮') -ForegroundColor Cyan
+    Write-Host ($pad + '+-- RUN COMPLETE ----------------------------------------------------------------------------+') -ForegroundColor Cyan
     
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-    Write-Host "  Completed : $Skipped lecture(s)".PadRight(72) -NoNewline -ForegroundColor Green
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+    Write-Host "  Completed : $Skipped lecture(s)".PadRight(92) -NoNewline -ForegroundColor Green
+    Write-Host '|' -ForegroundColor Cyan
 
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-    Write-Host "  Already   : $Already lecture(s)".PadRight(72) -NoNewline -ForegroundColor Gray
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+    Write-Host "  Already   : $Already lecture(s)".PadRight(92) -NoNewline -ForegroundColor Gray
+    Write-Host '|' -ForegroundColor Cyan
 
     if ($Failed -gt 0) {
-        Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-        Write-Host "  Failed    : $Failed lecture(s)".PadRight(72) -NoNewline -ForegroundColor Red
-        Write-Host '│' -ForegroundColor Cyan
+        Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+        Write-Host "  Failed    : $Failed lecture(s)".PadRight(92) -NoNewline -ForegroundColor Red
+        Write-Host '|' -ForegroundColor Cyan
     }
 
-    Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-    Write-Host "  Time      : $Elapsed".PadRight(72) -NoNewline -ForegroundColor White
-    Write-Host '│' -ForegroundColor Cyan
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+    Write-Host "  Time      : $Elapsed".PadRight(92) -NoNewline -ForegroundColor White
+    Write-Host '|' -ForegroundColor Cyan
 
-    Write-Host ($pad + '╰────────────────────────────────────────────────────────────────────────╯') -ForegroundColor Cyan
+    Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
     Write-Host ''
 }
 
@@ -583,31 +570,19 @@ function Start-VTUSkipper {
 
     # ------ Credentials Input ------------------------------------------------------------------------------------------------------------------------------------------------------------
     $pad = Get-UIPad
-    Write-Host ($pad + '  ╭─ AUTHENTICATION ─╮') -ForegroundColor Cyan
-    Write-Host ($pad + '  │') -NoNewline -ForegroundColor Cyan
-    Write-Host '  Email    ' -NoNewline -ForegroundColor DarkGray
-    Write-Host '▶ ' -NoNewline -ForegroundColor Cyan
+    Write-Host ($pad + '  :: AUTHENTICATION') -ForegroundColor Cyan
+    Write-Host ($pad + '     Email    -> ') -NoNewline -ForegroundColor DarkGray
     $email = Read-Host
-    Write-Host ($pad + '  │') -NoNewline -ForegroundColor Cyan
-    Write-Host '  Password ' -NoNewline -ForegroundColor DarkGray
-    Write-Host '▶ ' -NoNewline -ForegroundColor Cyan
+    Write-Host ($pad + '     Password -> ') -NoNewline -ForegroundColor DarkGray
     $secPass = Read-Host -AsSecureString
-    Write-Host ($pad + '  ╰──────────────────╯') -ForegroundColor Cyan
     Write-Host ''
 
     # ------ Login ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     Show-Step '1/3' 'Logging in...'
-    try {
-        $auth = Invoke-Login -Email $email -Password $secPass
-        $session = $auth.Session
-        $cookie = $auth.CookieHeader
-        Write-Host ($pad + '    OK') -ForegroundColor Green
-    }
-    catch {
-        Write-Host ($pad + "    FAILED: $($_.Exception.Message)") -ForegroundColor Red
-        Write-Host ($pad + "    [!] VTU's server often throws 500 errors. Please try running the script again.") -ForegroundColor Yellow
-        return
-    }
+    $auth = Invoke-Login -Email $email -Password $secPass
+    $session = $auth.Session
+    $cookie = $auth.CookieHeader
+    Write-Host ($pad + '    OK') -ForegroundColor Green
 
     # ------ Check enrollments exist before entering menu ------------------------------------------------------------------
     Show-Step '2/3' 'Fetching enrollments...'
@@ -636,7 +611,7 @@ function Start-VTUSkipper {
             Write-Host ''
             Write-Host ($pad + '  Thanks for using vtu-skip!') -ForegroundColor Cyan
             Write-Host ($pad + '  Star or contribute on GitHub:') -ForegroundColor DarkGray
-            $esc = [char]27
+            $esc  = [char]27
             $gLnk = "$esc]8;;https://github.com/13arathp/scripts$esc\https://github.com/13arathp/scripts$esc]8;;$esc\"
             $eLnk = "$esc]8;;https://mail.google.com/mail/?view=cm&fs=1&to=barathp.dev@gmail.com$esc\barathp.dev@gmail.com$esc]8;;$esc\"
             Write-Host ($pad + "  $gLnk") -ForegroundColor Yellow
@@ -664,13 +639,13 @@ function Invoke-SkipAllCourses {
     if ($incompleteCourses.Count -eq 0) {
         $pad = Get-UIPad
         Write-Host ''
-        Write-Host ($pad + '╭────────────────────────────────────────────────────────────────────────╮') -ForegroundColor Cyan
-        Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
-        Write-Host ($pad + '│') -NoNewline -ForegroundColor Cyan
-        Write-Host '  🎉 ALL COURSES COMPLETE! Nothing to skip.'.PadRight(72) -NoNewline -ForegroundColor Green
-        Write-Host '│' -ForegroundColor Cyan
-        Write-Host ($pad + '│                                                                        │') -ForegroundColor Cyan
-        Write-Host ($pad + '╰────────────────────────────────────────────────────────────────────────╯') -ForegroundColor Cyan
+        Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
+        Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
+        Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+        Write-Host '  🎉 ALL COURSES COMPLETE! Nothing to skip.'.PadRight(92) -NoNewline -ForegroundColor Green
+        Write-Host '|' -ForegroundColor Cyan
+        Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
+        Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
         Write-Host ''
         Write-Host ($pad + '  Press [Enter] to return to menu... ') -NoNewline -ForegroundColor DarkGray
         $null = Read-Host
@@ -735,7 +710,9 @@ function Invoke-SkipAllCourses {
 
         Write-Host ''
         $pad = Get-UIPad
-        Write-Host ($pad + "   ╰─▶ Processing $($pending.Count) pending lectures ($done already done)") -ForegroundColor DarkCyan
+        Write-Host ($pad + "    => $done done  ") -NoNewline -ForegroundColor Green
+        Write-Host "$($pending.Count) pending" -NoNewline -ForegroundColor Yellow
+        Write-Host "  of $total" -ForegroundColor DarkGray
 
         if ($pending.Count -eq 0) {
             Write-Host ($pad + '    All lectures complete!') -ForegroundColor Green
@@ -749,7 +726,7 @@ function Invoke-SkipAllCourses {
         foreach ($p in $pending) {
             $pad = Get-UIPad # Update dynamically for resizing
             $lecIndex++
-            $prefix = "       [$lecIndex/$($pending.Count)]  W$($p.Week) L$($p.LecNum) ".PadRight(22)
+            $prefix = "    [$lecIndex/$($pending.Count)]  W$($p.Week) L$($p.LecNum) : $($p.Id)   "
 
             # Fetch lecture duration for the progress bar and total_duration_seconds in the POST body.
             $totalSeconds = 0
@@ -827,18 +804,18 @@ function Invoke-SkipAllCourses {
                 $totalSkipped++
                 $bar = ConvertTo-ProgressBar -Current 100 -Total 100 -Width 16
                 Write-Host "$bar  " -NoNewline -ForegroundColor DarkCyan
-                Write-Host '✔ DONE' -ForegroundColor Green
+                Write-Host 'DONE' -ForegroundColor Green
             }
             elseif ($failed) {
                 $totalFailed++
                 Write-Host "$bar  " -NoNewline -ForegroundColor DarkCyan
-                Write-Host '✘ FAIL' -ForegroundColor Red
+                Write-Host 'FAIL' -ForegroundColor Red
             }
             else {
                 # Hit MaxRetries safety cap (only triggers on unknown-duration lectures)
                 $totalFailed++
                 Write-Host "$bar  " -NoNewline -ForegroundColor DarkCyan
-                Write-Host '⏳ TIME' -ForegroundColor Yellow
+                Write-Host 'TIME' -ForegroundColor Yellow
             }
         }
     }
@@ -880,7 +857,7 @@ finally {
         [Console]::ForegroundColor = 'DarkGray'
         [Console]::WriteLine('  Star or contribute on GitHub:')
         [Console]::ForegroundColor = 'Yellow'
-        $esc = [char]27
+        $esc  = [char]27
         $gLnk = "$esc]8;;https://github.com/13arathp/vtu-skip$esc\https://github.com/13arathp/vtu-skip$esc]8;;$esc\"
         $eLnk = "$esc]8;;https://mail.google.com/mail/?view=cm&fs=1&to=barathp.dev@gmail.com$esc\barathp.dev@gmail.com$esc]8;;$esc\"
         [Console]::WriteLine("  $gLnk")
