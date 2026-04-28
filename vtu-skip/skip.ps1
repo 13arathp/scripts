@@ -22,9 +22,9 @@ $Config = [pscustomobject]@{
     # 300 x 120s = 10 hours. Prevents infinite loops on bad API responses.
     MaxRetries     = 300
 
-    RetryCount     = 3    # HTTP-level retries per failed API request
-    RetryDelayMs   = 1500  # ms between HTTP retries
-    DelayMs        = 140   # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
+    RetryCount     = 4    # HTTP-level retries per failed API request
+    RetryDelayMs   = 2000  # ms between HTTP retries
+    DelayMs        = 180   # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
