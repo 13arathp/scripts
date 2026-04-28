@@ -58,6 +58,15 @@ function Get-UIPad {
     return ''
 }
 
+function Get-IncompleteCourses {
+    param($Enrollments)
+    return $Enrollments | Where-Object {
+        $slug = $_.details.slug
+        $progress = if ($null -ne $_.progress_percent) { [double]$_.progress_percent } else { 0 }
+        -not [string]::IsNullOrWhiteSpace($slug) -and $progress -lt 100
+    }
+}
+
 function ConvertFrom-VTUDuration {
     # Parses VTU duration string "HH:MM:SS mins" -> total seconds (int).
     param([string]$Duration)
@@ -78,13 +87,13 @@ function ConvertTo-ProgressBar {
 }
 
 function Send-StartupPing {
-    # Fire-and-forget ping to counter.dev — runs in a background job, never blocks or throws.
+    # Fire-and-forget ping to counter.dev — runs natively to avoid Start-Job overhead.
     try {
-        $null = Start-Job -ScriptBlock {
-            try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
-            $null = Invoke-RestMethod -Uri "https://t.counter.dev/track?id=48b364ab-0c36-4a3a-a010-165c74bbf7d6&utcoffset=6&referrer=https://vtu-skip.cli&screen=0x0" `
-                -Method GET -Headers @{ Origin = "https://13arathp.vercel.app" } -ErrorAction SilentlyContinue
-        }
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $req = [System.Net.WebRequest]::Create("https://t.counter.dev/track?id=48b364ab-0c36-4a3a-a010-165c74bbf7d6&utcoffset=6&referrer=https://vtu-skip.cli&screen=0x0")
+        $req.Method = "GET"
+        $req.Headers.Add("Origin", "https://13arathp.vercel.app")
+        $null = $req.GetResponseAsync()
     }
     catch { }
 }
@@ -155,6 +164,7 @@ function Invoke-Api {
                 }
             }
             catch { }
+
             Start-Sleep -Milliseconds $Config.RetryDelayMs
         }
     }
@@ -590,7 +600,8 @@ function Start-VTUSkipper {
         Write-Host ''
         Write-Host ($pad + '  Refreshing...') -ForegroundColor DarkGray
         $enrollments = Get-Enrollments    -Session $session -CookieHeader $cookie
-        $courseCache = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $enrollments
+        $incompleteCourses = Get-IncompleteCourses -Enrollments $enrollments
+        $courseCache = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $incompleteCourses
 
         $choices = @('Fetch Course Stats', 'Skip All Courses', 'Exit')
         $sel = Show-InteractiveMenu -Title 'MENU' -Options $choices
@@ -622,6 +633,32 @@ function Invoke-SkipAllCourses {
     param($Session, $CookieHeader, $Enrollments, $CourseCache)
     Clear-Host
     Show-Banner
+    
+    $incompleteCourses = Get-IncompleteCourses -Enrollments $Enrollments
+    
+    if ($incompleteCourses.Count -eq 0) {
+        $pad = Get-UIPad
+        Write-Host ''
+        Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
+        Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
+        Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+        Write-Host '  🎉 ALL COURSES COMPLETE! Nothing to skip.'.PadRight(92) -NoNewline -ForegroundColor Green
+        Write-Host '|' -ForegroundColor Cyan
+        Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
+        Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host ($pad + '  Press [Enter] to return to menu... ') -NoNewline -ForegroundColor DarkGray
+        $null = Read-Host
+        return
+    }
+
+    $completedCount = $Enrollments.Count - $incompleteCourses.Count
+    $pad = Get-UIPad
+    Write-Host ''
+    Write-Host ($pad + "  Found $($incompleteCourses.Count) incomplete course(s)") -ForegroundColor Yellow
+    Write-Host ($pad + "  Skipping $completedCount already-complete course(s)") -ForegroundColor DarkGray
+    Write-Host ''
+
     Show-Step '3/3' 'Processing courses...'
     Write-Host ''
 
@@ -631,23 +668,13 @@ function Invoke-SkipAllCourses {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
     $courseIndex = 0
-    foreach ($e in $Enrollments) {
+    foreach ($e in $incompleteCourses) {
         $courseIndex++
         $slug = $e.details.slug
         $title = $e.details.title
         $progress = if ($null -ne $e.progress_percent) { $e.progress_percent } else { '?' }
 
-        # Skip enrollments with no slug (malformed API data)
-        if ([string]::IsNullOrWhiteSpace($slug)) { continue }
-
-        # Fast-skip courses already at 100% --- no API call needed
-        if ($progress -ne '?' -and [double]$progress -ge 100) {
-            Show-CourseHeader $courseIndex $Enrollments.Count $title $progress
-            Write-Host '   [--] Already at 100% --- skipped' -ForegroundColor DarkGray
-            continue
-        }
-
-        Show-CourseHeader $courseIndex $Enrollments.Count $title $progress
+        Show-CourseHeader $courseIndex $incompleteCourses.Count $title $progress
 
         # Use pre-fetched course data from cache
         $course = if ($CourseCache.ContainsKey($slug)) { $CourseCache[$slug] } else { $null }
@@ -713,7 +740,9 @@ function Invoke-SkipAllCourses {
 
             # Always use MaxRetries as the cap — let the server decide when it's done.
             # totalChunks is kept only as a denominator for the local progress bar estimate.
-            $totalChunks = if ($totalSeconds -gt 0) { [math]::Ceiling($totalSeconds / $Config.WatchChunk) } else { $Config.MaxRetries }
+            $fallbackChunks = 30 # ~1 hour fallback if duration is unknown
+            $totalChunks = if ($totalSeconds -gt 0) { [math]::Ceiling($totalSeconds / $Config.WatchChunk) } else { $fallbackChunks }
+            $maxIter = if ($totalSeconds -gt 0) { $Config.MaxRetries } else { $fallbackChunks }
 
             $currentTime = 0
             $chunk = $Config.WatchChunk
@@ -721,12 +750,13 @@ function Invoke-SkipAllCourses {
             $tries = 0
             $failed = $false
             $bar = ConvertTo-ProgressBar -Current 0 -Total 100 -Width 16
+            $lastBar = ""
 
             # Print the static prefix for this lecture line
             Write-Host ($pad + $prefix) -NoNewline -ForegroundColor DarkGray
 
-            # Send chunks until the server confirms is_completed=True, or we hit MaxRetries
-            while (-not $completed -and $tries -lt $Config.MaxRetries) {
+            # Send chunks until the server confirms is_completed=True, or we hit maxIter
+            while (-not $completed -and $tries -lt $maxIter) {
                 $currentTime += $chunk
                 $tries++
                 try {
@@ -747,8 +777,12 @@ function Invoke-SkipAllCourses {
                         else {
                             $bar = ConvertTo-ProgressBar -Current $tries -Total $totalChunks -Width 16
                         }
-                        $pad = Get-UIPad
-                        Write-Host "`r$pad$prefix$bar" -NoNewline -ForegroundColor DarkCyan
+                        
+                        if ($bar -ne $lastBar) {
+                            $pad = Get-UIPad
+                            Write-Host "`r$pad$prefix$bar" -NoNewline -ForegroundColor DarkCyan
+                            $lastBar = $bar
+                        }
                     }
                 }
                 catch {
