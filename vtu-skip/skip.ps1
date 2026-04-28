@@ -15,6 +15,7 @@ try {
     $Global:HttpClientHandler.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
     $Global:HttpClient = [System.Net.Http.HttpClient]::new($Global:HttpClientHandler)
     $Global:HttpClient.Timeout = [System.TimeSpan]::FromSeconds(15)
+    $Global:HttpClient.DefaultRequestHeaders.ConnectionClose = $false
 }
 catch {
     Write-Warning "Could not load System.Net.Http for async requests."
@@ -41,6 +42,9 @@ $Config = [pscustomobject]@{
     RetryCount     = 3    # HTTP-level retries per failed API request
     RetryDelayMs   = 1500  # ms between HTTP retries
     DelayMs        = 470    # ms between consecutive API calls. Network RTT (~600ms) is the natural rate limiter.
+    
+    TaskDrainTimeout   = 30
+    MaxConcurrentTasks = 10
 }
 
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -72,6 +76,15 @@ function Get-UIPad {
     $boxW = 94
     if ($w -gt $boxW) { return ' ' * [math]::Floor(($w - $boxW) / 2) }
     return ''
+}
+
+function Get-IncompleteCourses {
+    param($Enrollments)
+    return $Enrollments | Where-Object {
+        $slug = $_.details.slug
+        $progress = if ($null -ne $_.progress_percent) { [double]$_.progress_percent } else { 0 }
+        -not [string]::IsNullOrWhiteSpace($slug) -and $progress -lt 100
+    }
 }
 
 function ConvertFrom-VTUDuration {
@@ -605,7 +618,8 @@ function Start-VTUSkipper {
         Write-Host ''
         Write-Host ($pad + '  Refreshing...') -ForegroundColor DarkGray
         $enrollments = Get-Enrollments    -Session $session -CookieHeader $cookie
-        $courseCache = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $enrollments
+        $incompleteCourses = Get-IncompleteCourses -Enrollments $enrollments
+        $courseCache = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $incompleteCourses
 
         $choices = @('Fetch Course Stats', 'Skip All Courses', 'Exit')
         $sel = Show-InteractiveMenu -Title 'MENU' -Options $choices
@@ -637,6 +651,32 @@ function Invoke-SkipAllCourses {
     param($Session, $CookieHeader, $Enrollments, $CourseCache)
     Clear-Host
     Show-Banner
+    
+    $incompleteCourses = Get-IncompleteCourses -Enrollments $Enrollments
+    
+    if ($incompleteCourses.Count -eq 0) {
+        $pad = Get-UIPad
+        Write-Host ''
+        Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
+        Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
+        Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+        Write-Host '  🎉 ALL COURSES COMPLETE! Nothing to skip.'.PadRight(92) -NoNewline -ForegroundColor Green
+        Write-Host '|' -ForegroundColor Cyan
+        Write-Host ($pad + '|                                                                                            |') -ForegroundColor Cyan
+        Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host ($pad + '  Press [Enter] to return to menu... ') -NoNewline -ForegroundColor DarkGray
+        $null = Read-Host
+        return
+    }
+    
+    $completedCount = $Enrollments.Count - $incompleteCourses.Count
+    $pad = Get-UIPad
+    Write-Host ''
+    Write-Host ($pad + "  Found $($incompleteCourses.Count) incomplete course(s)") -ForegroundColor Yellow
+    Write-Host ($pad + "  Skipping $completedCount already-complete course(s)") -ForegroundColor DarkGray
+    Write-Host ''
+
     Show-Step '3/3' 'Processing courses...'
     Write-Host ''
 
@@ -646,23 +686,13 @@ function Invoke-SkipAllCourses {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
     $courseIndex = 0
-    foreach ($e in $Enrollments) {
+    foreach ($e in $incompleteCourses) {
         $courseIndex++
         $slug = $e.details.slug
         $title = $e.details.title
         $progress = if ($null -ne $e.progress_percent) { $e.progress_percent } else { '?' }
 
-        # Skip enrollments with no slug (malformed API data)
-        if ([string]::IsNullOrWhiteSpace($slug)) { continue }
-
-        # Fast-skip courses already at 100% --- no API call needed
-        if ($progress -ne '?' -and [double]$progress -ge 100) {
-            Show-CourseHeader $courseIndex $Enrollments.Count $title $progress
-            Write-Host '   [--] Already at 100% --- skipped' -ForegroundColor DarkGray
-            continue
-        }
-
-        Show-CourseHeader $courseIndex $Enrollments.Count $title $progress
+        Show-CourseHeader $courseIndex $incompleteCourses.Count $title $progress
 
         # Use pre-fetched course data from cache
         $course = if ($CourseCache.ContainsKey($slug)) { $CourseCache[$slug] } else { $null }
@@ -743,7 +773,7 @@ function Invoke-SkipAllCourses {
             # Send chunks asynchronously without waiting for responses in between.
             # We must use MaxRetries as the ceiling because fast async dispatches cause server-side database race conditions (dropped watched time).
             $maxToDispatch = $Config.MaxRetries
-            $maxInFlight = if ($totalSeconds -gt 0) { $totalChunks } else { 3 }
+            $maxInFlight = if ($totalSeconds -gt 0) { [Math]::Min($totalChunks, $Config.MaxConcurrentTasks) } else { 3 }
             $tasks = [System.Collections.Generic.List[object]]::new()
 
             $checkTasks = {
@@ -828,10 +858,17 @@ function Invoke-SkipAllCourses {
             }
 
             # Drain any remaining in-flight tasks
-            $drainTries = 0
-            while (-not $completed -and -not $failed -and $tasks.Count -gt 0 -and $drainTries -lt 500) {
+            $drainStart = [DateTime]::Now
+            $drainTimeout = [TimeSpan]::FromSeconds($Config.TaskDrainTimeout)
+
+            while (-not $completed -and -not $failed -and $tasks.Count -gt 0) {
+                $elapsedDrain = [DateTime]::Now - $drainStart
+                if ($elapsedDrain -gt $drainTimeout) {
+                    Write-Log "Task drain timeout after $($Config.TaskDrainTimeout)s" 'WARN'
+                    $failed = $true
+                    break
+                }
                 Start-Sleep -Milliseconds 100
-                $drainTries++
                 . $checkTasks
             }
 
@@ -887,6 +924,8 @@ try {
     Start-VTUSkipper
 }
 finally {
+    if ($Global:HttpClient) { $Global:HttpClient.Dispose() }
+    if ($Global:HttpClientHandler) { $Global:HttpClientHandler.Dispose() }
     if ([Console]::CursorVisible -ne $null) { try { [Console]::CursorVisible = $true } catch {} }
     try {
         [Console]::WriteLine('')
