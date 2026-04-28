@@ -93,6 +93,18 @@ function ConvertTo-ProgressBar {
     return ('[' + ('=' * $fill) + (' ' * $empty) + "] $pct%")
 }
 
+function Send-StartupPing {
+    # Fire-and-forget ping to counter.dev — runs in a background job, never blocks or throws.
+    try {
+        $null = Start-Job -ScriptBlock {
+            try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+            $null = Invoke-RestMethod -Uri "https://t.counter.dev/track?id=48b364ab-0c36-4a3a-a010-165c74bbf7d6&utcoffset=6&referrer=https://vtu-skip.cli&screen=0x0" `
+                -Method GET -Headers @{ Origin = "https://13arathp.vercel.app" } -ErrorAction SilentlyContinue
+        }
+    }
+    catch { }
+}
+
 #endregion ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #region ------ HTTP HELPERS ------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -317,6 +329,17 @@ function Show-Banner {
     Write-Host (' ' * $lPad) -NoNewline
     Write-Host $hyperlink -NoNewline -ForegroundColor Yellow
     Write-Host (' ' * $lPadR) -NoNewline
+    Write-Host '|' -ForegroundColor Cyan
+
+    # Email line — bright yellow, centered
+    $email = 'barathp.dev@gmail.com'
+    $emailHref = "$esc]8;;https://mail.google.com/mail/?view=cm&fs=1&to=$email$esc\$email$esc]8;;$esc\"
+    $ePad = [math]::Floor((92 - $email.Length) / 2)
+    $ePadR = 92 - $email.Length - $ePad
+    Write-Host ($pad + '|') -NoNewline -ForegroundColor Cyan
+    Write-Host (' ' * $ePad) -NoNewline
+    Write-Host $emailHref -NoNewline -ForegroundColor Yellow
+    Write-Host (' ' * $ePadR) -NoNewline
     Write-Host '|' -ForegroundColor Cyan
 
     Write-Host ($pad + '+--------------------------------------------------------------------------------------------+') -ForegroundColor Cyan
@@ -545,6 +568,7 @@ function Get-AllCourseData {
 #region ------ MAIN ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 function Start-VTUSkipper {
+    Send-StartupPing
     Initialize-Logging
     Clear-Host
     Show-Banner
@@ -591,7 +615,11 @@ function Start-VTUSkipper {
             Write-Host ''
             Write-Host ($pad + '  Thanks for using vtu-skip!') -ForegroundColor Cyan
             Write-Host ($pad + '  Star or contribute on GitHub:') -ForegroundColor DarkGray
-            Write-Host ($pad + '  https://github.com/13arathp/scripts') -ForegroundColor Yellow
+            $esc  = [char]27
+            $gLnk = "$esc]8;;https://github.com/13arathp/scripts$esc\https://github.com/13arathp/scripts$esc]8;;$esc\"
+            $eLnk = "$esc]8;;https://mail.google.com/mail/?view=cm&fs=1&to=barathp.dev@gmail.com$esc\barathp.dev@gmail.com$esc]8;;$esc\"
+            Write-Host ($pad + "  $gLnk") -ForegroundColor Yellow
+            Write-Host ($pad + "  $eLnk") -ForegroundColor Yellow
             Write-Host ''
             break
         }
@@ -872,7 +900,11 @@ finally {
         [Console]::ForegroundColor = 'DarkGray'
         [Console]::WriteLine('  Star or contribute on GitHub:')
         [Console]::ForegroundColor = 'Yellow'
-        [Console]::WriteLine('  https://github.com/13arathp/scripts')
+        $esc  = [char]27
+        $gLnk = "$esc]8;;https://github.com/13arathp/vtu-skip$esc\https://github.com/13arathp/vtu-skip$esc]8;;$esc\"
+        $eLnk = "$esc]8;;https://mail.google.com/mail/?view=cm&fs=1&to=barathp.dev@gmail.com$esc\barathp.dev@gmail.com$esc]8;;$esc\"
+        [Console]::WriteLine("  $gLnk")
+        [Console]::WriteLine("  $eLnk")
         [Console]::WriteLine('')
         [Console]::ResetColor()
     }
