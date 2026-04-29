@@ -11,25 +11,28 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 # All box-drawing / symbol chars are built from Unicode codepoints at runtime.
 # This keeps the source file byte-for-byte ASCII - safe for irm | iex from
 # GitHub raw / Vercel regardless of encoding headers or BOM handling.
-$_V   = [char]0x2551                       # vertical border   |
-$_H   = [string][char]0x2550               # horizontal (string so * repetition works)
-$_TL  = [char]0x2554                       # corner top-left
-$_TR  = [char]0x2557                       # corner top-right
-$_ML  = [char]0x2560                       # mid-left  (section divider)
-$_MR  = [char]0x2563                       # mid-right
+$_V = [char]0x2551                       # vertical border   |
+$_H = [string][char]0x2550               # horizontal (string so * repetition works)
+$_TL = [char]0x2554                       # corner top-left
+$_TR = [char]0x2557                       # corner top-right
+$_BL = [char]0x255A                       # corner bottom-left
+$_BR = [char]0x255D                       # corner bottom-right
+$_ML = [char]0x2560                       # mid-left  (section divider)
+$_MR = [char]0x2563                       # mid-right
 $_ARR = [char]0x25B6                       # menu selector arrow
 $_DIA = [char]0x25C6                       # section bullet
 $_CHK = [char]0x2713                       # success tick
 $_CRS = [char]0x2717                       # failure cross
 $_INF = [char]0x2139                       # info symbol
-$_GT  = [char]0x203A                       # item prefix (single right angle)
+$_GT = [char]0x203A                       # item prefix (single right angle)
 $_CEL = [char]::ConvertFromUtf32(0x1F389)  # party popper emoji (surrogate pair)
 
 # Pre-built border strings  (94 chars = corner + 92x horizontal + corner)
-$_TOP        = "$_TL" + ($_H * 92) + "$_TR"
-$_EMPTY      = "$_V"  + (' '  * 92) + "$_V"
-$_SEC_COURSE = "$_ML" + ($_H * 2) + " COURSE OVERVIEW " + ($_H * 73) + "$_MR"
-$_SEC_RUN    = "$_ML" + ($_H * 2) + " RUN COMPLETE "    + ($_H * 76) + "$_MR"
+$_TOP = "$_TL" + ($_H * 92) + "$_TR"
+$_BOT = "$_BL" + ($_H * 92) + "$_BR"
+$_EMPTY = "$_V" + (' ' * 92) + "$_V"
+$_SEC_COURSE = "$_TL" + ($_H * 2) + " COURSE OVERVIEW " + ($_H * 73) + "$_TR"
+$_SEC_RUN = "$_ML" + ($_H * 2) + " RUN COMPLETE " + ($_H * 76) + "$_MR"
 #endregion -----------------------------------------------------------------------
 
 
@@ -105,11 +108,13 @@ function ConvertFrom-VTUDuration {
 
 function ConvertTo-ProgressBar {
     param([int]$Current, [int]$Total, [int]$Width = 22)
-    if ($Total -le 0) { return ('[' + ('=' * $Width) + '] 100%') }
+    $fb = [string][char]0x2588  # full block
+    $eb = [string][char]0x2591  # light shade (empty)
+    if ($Total -le 0) { return ($fb * $Width) + ' 100%' }
     $pct = [math]::Min(100, [math]::Round(($Current / $Total) * 100))
     $fill = [math]::Round(($pct / 100) * $Width)
-    $empty = $Width - $fill
-    return ('[' + ('=' * $fill) + (' ' * $empty) + "] $pct%")
+    $empt = $Width - $fill
+    return ($fb * $fill) + ($eb * $empt) + " $pct%"
 }
 
 function Send-StartupPing {
@@ -363,7 +368,7 @@ function Show-Banner {
     Write-Host (' ' * $ePadR) -NoNewline
     Write-Host $_V -ForegroundColor Cyan
 
-    Write-Host ($pad + $_TOP) -ForegroundColor Cyan
+    Write-Host ($pad + $_BOT) -ForegroundColor Cyan
     Write-Host ''
 }
 
@@ -412,7 +417,7 @@ function Show-InteractiveMenu {
                 Write-Host $_V -ForegroundColor Cyan
             }
             Write-Host ($pad + $_EMPTY) -ForegroundColor Cyan
-            Write-Host ($pad + $_TOP) -ForegroundColor Cyan
+            Write-Host ($pad + $_BOT) -ForegroundColor Cyan
             Write-Host ''
         
             $help = '[Use Up/Down Arrows to select, Enter to confirm]'
@@ -498,7 +503,7 @@ function Invoke-FetchDetails {
             Write-Host $_V -ForegroundColor Cyan
         }
     }
-    Write-Host ($pad + $_TOP) -ForegroundColor Cyan
+    Write-Host ($pad + $_BOT) -ForegroundColor Cyan
     Write-Host ''
     
     $help = '[Press Enter to return to menu]'
@@ -540,7 +545,7 @@ function Show-CourseHeader {
     Write-Host " $bar".PadRight(92) -NoNewline -ForegroundColor DarkCyan
     Write-Host $_V -ForegroundColor Cyan
     
-    Write-Host ($pad + $_TOP) -ForegroundColor Cyan
+    Write-Host ($pad + $_BOT) -ForegroundColor Cyan
 }
 
 function Show-Summary {
@@ -567,7 +572,7 @@ function Show-Summary {
     Write-Host "  Time      : $Elapsed".PadRight(92) -NoNewline -ForegroundColor White
     Write-Host $_V -ForegroundColor Cyan
 
-    Write-Host ($pad + $_TOP) -ForegroundColor Cyan
+    Write-Host ($pad + $_BOT) -ForegroundColor Cyan
     Write-Host ''
 }
 
@@ -637,7 +642,7 @@ function Start-VTUSkipper {
             Write-Host ''
             Write-Host ($pad + '  Thanks for using vtu-skip!') -ForegroundColor Cyan
             Write-Host ($pad + '  Star or contribute on GitHub:') -ForegroundColor DarkGray
-            $esc  = [char]27
+            $esc = [char]27
             $gLnk = "$esc]8;;https://github.com/13arathp/scripts$esc\https://github.com/13arathp/scripts$esc]8;;$esc\"
             $eLnk = "$esc]8;;https://mail.google.com/mail/?view=cm&fs=1&to=barathp.dev@gmail.com$esc\barathp.dev@gmail.com$esc]8;;$esc\"
             Write-Host ($pad + "  $gLnk") -ForegroundColor Yellow
@@ -671,7 +676,7 @@ function Invoke-SkipAllCourses {
         Write-Host "  $_CEL ALL COURSES COMPLETE! Nothing to skip.".PadRight(92) -NoNewline -ForegroundColor Green
         Write-Host $_V -ForegroundColor Cyan
         Write-Host ($pad + $_EMPTY) -ForegroundColor Cyan
-        Write-Host ($pad + $_TOP) -ForegroundColor Cyan
+        Write-Host ($pad + $_BOT) -ForegroundColor Cyan
         Write-Host ''
         Write-Host ($pad + '  Press [Enter] to return to menu... ') -NoNewline -ForegroundColor DarkGray
         $null = Read-Host
@@ -883,7 +888,7 @@ finally {
         [Console]::ForegroundColor = 'DarkGray'
         [Console]::WriteLine('  Star or contribute on GitHub:')
         [Console]::ForegroundColor = 'Yellow'
-        $esc  = [char]27
+        $esc = [char]27
         $gLnk = "$esc]8;;https://github.com/13arathp/vtu-skip$esc\https://github.com/13arathp/vtu-skip$esc]8;;$esc\"
         $eLnk = "$esc]8;;https://mail.google.com/mail/?view=cm&fs=1&to=barathp.dev@gmail.com$esc\barathp.dev@gmail.com$esc]8;;$esc\"
         [Console]::WriteLine("  $gLnk")
