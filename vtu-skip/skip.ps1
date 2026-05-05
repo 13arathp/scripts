@@ -690,6 +690,15 @@ function Invoke-SkipAllCourses {
     Write-Host ($pad + "  Skipping $completedCount already-complete course(s)") -ForegroundColor DarkGray
     Write-Host ''
 
+    Write-Host ($pad + "    Note: If the script feels slow or skipping takes multiple minutes") -ForegroundColor Yellow
+    Write-Host ($pad + "    per lesson, it is due to the VTU server being slow. Please try") -ForegroundColor Yellow
+    Write-Host ($pad + "    again later (preferably at night when the server is fast).") -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host ($pad + "    Note: If some lectures fail at 0%, try re-running the script.") -ForegroundColor Yellow
+    Write-Host ($pad + "    If a specific lecture keeps failing, it's an issue with the") -ForegroundColor Yellow
+    Write-Host ($pad + "    VTU server. Your best option is to watch that lecture manually.") -ForegroundColor Yellow
+    Write-Host ''
+
     Show-Step '3/3' 'Processing courses...'
     Write-Host ''
 
