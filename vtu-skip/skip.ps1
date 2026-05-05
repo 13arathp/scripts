@@ -469,7 +469,7 @@ function Invoke-FetchDetails {
         $progressNum = if ($progress -ne '?' -and $null -ne $progress) { [int][double]$progress } else { 0 }
         
         Write-Host ($pad + $_V) -NoNewline -ForegroundColor Cyan
-        Write-Host " [$courseIndex/$($Enrollments.Count)] $titleShort".PadRight(92) -NoNewline -ForegroundColor White
+        Write-Host " [$courseIndex/$(@($Enrollments).Count)] $titleShort".PadRight(92) -NoNewline -ForegroundColor White
         Write-Host $_V -ForegroundColor Cyan
         
         $course = if ($CourseCache.ContainsKey($slug)) { $CourseCache[$slug] } else { $null }
@@ -631,7 +631,7 @@ function Start-VTUSkipper {
         Write-Host ''
         Write-Host ($pad + '  Refreshing...') -ForegroundColor DarkGray
         $enrollments = Get-Enrollments    -Session $session -CookieHeader $cookie
-        $incompleteCourses = Get-IncompleteCourses -Enrollments $enrollments
+        $incompleteCourses = @(Get-IncompleteCourses -Enrollments $enrollments)
         $courseCache = Get-AllCourseData  -Session $session -CookieHeader $cookie -Enrollments $incompleteCourses
 
         $choices = @('Fetch Course Stats', 'Skip All Courses', 'Exit')
@@ -665,7 +665,7 @@ function Invoke-SkipAllCourses {
     Clear-Host
     Show-Banner
     
-    $incompleteCourses = Get-IncompleteCourses -Enrollments $Enrollments
+    $incompleteCourses = @(Get-IncompleteCourses -Enrollments $Enrollments)
     
     if ($incompleteCourses.Count -eq 0) {
         $pad = Get-UIPad
@@ -683,7 +683,7 @@ function Invoke-SkipAllCourses {
         return
     }
 
-    $completedCount = $Enrollments.Count - $incompleteCourses.Count
+    $completedCount = @($Enrollments).Count - @($incompleteCourses).Count
     $pad = Get-UIPad
     Write-Host ''
     Write-Host ($pad + "  Found $($incompleteCourses.Count) incomplete course(s)") -ForegroundColor Yellow
@@ -725,7 +725,7 @@ function Invoke-SkipAllCourses {
         $done = 0
         $total = 0
 
-        for ($i = 0; $i -lt $lessons.Count; $i++) {
+        for ($i = 0; $i -lt @($lessons).Count; $i++) {
             $lects = $lessons[$i].lectures
             if (-not $lects) { continue }
             $lecNum = 1
